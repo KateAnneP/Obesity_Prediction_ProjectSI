@@ -1,33 +1,31 @@
-#Model uczenia maszynowego
+# Model uczenia maszynowego
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import accuracy_score
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+import tensorflow as tf
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
 
-#Wczytywanie danych
+# Wczytywanie danych
 data = pd.read_csv('dane/ObesityDataSet_raw_and_data_sinthetic.csv')
-dc = data.copy() #Kopia danych, jakby się coś zepsuło przypadkiem
-# print(data)
-# print("Początek danych: ", data.head(20))
-# print("Koniec danych: ", data.tail(20))
+dc = data.copy()
 
 # Sprawdzenie braków danych
 missing_values = dc.isnull().sum()
 # print("Braki danych:")
 #print(missing_values)
 
-#Sprawdzanie duplikatów
+# Sprawdzanie duplikatów
 duplicates = dc.duplicated().sum()
 print(f"Duplikaty: {duplicates}")
 dc = dc.drop_duplicates()
-print(dc.duplicated().sum())
+print(f"Duplikaty po usunięciu: {dc.duplicated().sum()}")
 
-#Kolumny kategoryczne i numeryczne
+# Kolumny kategoryczne i numeryczne
 categorical_cols = []
 numeric_cols = []
 
@@ -37,23 +35,17 @@ for col in dc.columns:
     elif pd.api.types.is_object_dtype(dc[col]):
         categorical_cols.append(col)
 
-# print(f"Kolumny kategoryczne: {categorical_cols}")
-# print(f"Kolumny numeryczne: {numeric_cols}")
-
-categorical_features = categorical_cols[:-1] #Kolumny kategoryczne bez kolumny z decyzją
+categorical_features = categorical_cols[:-1] # Kolumny kategoryczne bez kolumny z decyzją
 
 #--- Kodowanie danych ---
 label_encoder_target = LabelEncoder()
 dc['NObeyesdad_Encoded'] = label_encoder_target.fit_transform(dc['NObeyesdad'])
 dc['NObeyesdad_Encoded'].value_counts()
 
-#Kodowanie wszystkich kolumn kategorycznych
+# Kodowanie wszystkich kolumn kategorycznych
 label_encoders = {}
 
 for col in categorical_features:
-    #print(dc[col])
-    #dc[col] = label_encoder.fit_transform(dc[col])
-    #print(dc[col])
     le = LabelEncoder()
     dc[col] = le.fit_transform(dc[col])
     label_encoders[col] = le
@@ -62,38 +54,113 @@ for col in categorical_features:
 X = dc.iloc[:, :-2].values
 y = dc['NObeyesdad_Encoded'].values
 
-#Wydzielenie z danych części testowej i treningowej
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
 #Skalowanie cech
 scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
+X = scaler.fit_transform(X)
 
 # --- UCZENIE ---
-# Model - Lasy losowe
-model = RandomForestClassifier()
+#------------------------------------------------------------------------
+# Model sieci
+def create_model(input_size, hidden_size, output_size):
+    model = tf.keras.Sequential([
+        tf.keras.layers.Dense(hidden_size, input_shape=(input_size,), activation='relu'),
+        tf.keras.layers.Dense(hidden_size, activation='relu'),
+        tf.keras.layers.Dense(output_size, activation='softmax')
+    ])
+    return model
 
-# Cross-walidacja
-cv_scores = cross_val_score(model, X_train, y_train, cv=5)  # 5-fold cross-walidacja
-print("Cross-validation scores:", cv_scores)
-print("Mean cross-validation score:", cv_scores.mean())
+# Parametry sieci
+input_size = X.shape[1]
+hidden_size = 64
+output_size = len(np.unique(y))  # Liczba klas
+num_epochs = 500
+batch_size = 32
+learning_rate = 0.001
 
-model.fit(X_train,y_train)
-y_pred = model.predict(X_test)
-accuracy = accuracy_score(y_test, y_pred)
-print("Dokładność lasów losowych: ", accuracy)
+# Krosswalidacja
+skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+accuracies = []
+f1_scores = []
+precisions = []
+recalls = []
+confusion_matrices = []
+
+for train_index, test_index in skf.split(X, y):
+    X_train, X_test = X[train_index], X[test_index]
+    y_train, y_test = y[train_index], y[test_index]
+
+    # Konwersja etykiet do kategorii
+    if output_size > 1:
+        y_train = tf.keras.utils.to_categorical(y_train, output_size)
+        y_test = tf.keras.utils.to_categorical(y_test, output_size)
+
+    # Inicjalizacja modelu
+    model = create_model(input_size, hidden_size, output_size)
+
+    # Kompilacja modelu
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+                  loss='categorical_crossentropy' if output_size > 1 else 'binary_crossentropy',
+                  metrics=['accuracy'])
+
+    # Trenowanie modelu
+    model.fit(X_train, y_train, epochs=num_epochs, batch_size=batch_size, verbose=0)
+
+    # Testowanie modelu
+    y_pred = model.predict(X_test)
+    if output_size > 1:
+        y_pred_classes = np.argmax(y_pred, axis=1)
+        y_test_classes = np.argmax(y_test, axis=1)
+    else:
+        y_pred_classes = (y_pred > 0.5).astype(int).reshape(-1)
+        y_test_classes = y_test
+
+    accuracies.append(accuracy_score(y_test_classes, y_pred_classes))
+    f1_scores.append(f1_score(y_test_classes, y_pred_classes, average='weighted'))
+    precisions.append(precision_score(y_test_classes, y_pred_classes, average='weighted'))
+    recalls.append(recall_score(y_test_classes, y_pred_classes, average='weighted'))
+
+    # Obliczanie macierzy pomyłek
+    cm = confusion_matrix(y_test_classes, y_pred_classes)
+    confusion_matrices.append(cm)
+
+# Obliczenie średniej i odchylenia standardowego dla każdej miary
+mean_accuracy = np.mean(accuracies)
+std_accuracy = np.std(accuracies)
+
+mean_f1 = np.mean(f1_scores)
+std_f1 = np.std(f1_scores)
+
+mean_precision = np.mean(precisions)
+std_precision = np.std(precisions)
+
+mean_recall = np.mean(recalls)
+std_recall = np.std(recalls)
+
+print(f'Średnia dokładność: {mean_accuracy:.4f} (± {std_accuracy:.4f})')
+print(f'Średnia F1: {mean_f1:.4f} (± {std_f1:.4f})')
+print(f'Średnia precyzja: {mean_precision:.4f} (± {std_precision:.4f})')
+print(f'Średnia czułość: {mean_recall:.4f} (± {std_recall:.4f})')
+
+# Wyświetlanie macierzy pomyłek dla każdej iteracji krosswalidacji
+for i, cm in enumerate(confusion_matrices):
+    plt.figure(figsize=(10, 7))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+    plt.title(f'Macierz pomyłek dla fold {i + 1}')
+    plt.xlabel('Predykcja')
+    plt.ylabel('Rzeczywistość')
+    plt.show()
+
 
 # Zapisywanie modelu i skalera
-import pickle
-with open('model.pkl', 'wb') as model_file:
-    pickle.dump(model, model_file)
+import joblib
 
-with open('scaler.pkl', 'wb') as scaler_file:
-    pickle.dump(scaler, scaler_file)
+# Zapisywanie skalera
+joblib.dump(scaler, 'scaler.joblib')
 
-with open('label_encoders.pkl', 'wb') as le_file:
-    pickle.dump(label_encoders, le_file)
+# Zapisywanie encoderów
+joblib.dump(label_encoders, 'label_encoders.joblib')
+joblib.dump(label_encoder_target, 'label_encoder_target.joblib')
 
-with open('label_encoder_target.pkl', 'wb') as le_target_file:
-    pickle.dump(label_encoder_target, le_target_file)
+# Zapisywanie modelu
+model.save('model.keras')
+
