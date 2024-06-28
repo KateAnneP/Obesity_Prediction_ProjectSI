@@ -41,8 +41,6 @@ for col in dc.columns:
 
 categorical_features = categorical_cols[:-1] # Kolumny kategoryczne bez kolumny z decyzją
 
-#--- KODOWANIE DANYCH ---
-
 #Kolejność klas decyzyjnych
 order_of_classes = ['Insufficient_Weight', 'Normal_Weight', 'Overweight_Level_I', 'Overweight_Level_II', 'Obesity_Type_I', 'Obesity_Type_II', 'Obesity_Type_III']
 dc['NObeyesdad'] = pd.Categorical(dc['NObeyesdad'], categories=order_of_classes, ordered=True)
@@ -67,25 +65,6 @@ class PrintProgress(tf.keras.callbacks.Callback):
             print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {logs["loss"]:.4f}')
 
 #------------------------------------------------------------------------
-# Model sieci - ta sama ilość neuronów
-def create_model(input_size, hidden_size, output_size):
-    model = tf.keras.Sequential([
-        tf.keras.layers.Dense(hidden_size, input_shape=(input_size,), activation='relu', kernel_regularizer=regularizers.L2(0.001)),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.Dropout(0.3),  # Dodanie dropout dla regularizacji
-        tf.keras.layers.Dense(hidden_size, activation='relu', kernel_regularizer=regularizers.L2(0.001)),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.Dropout(0.3),
-        tf.keras.layers.Dense(hidden_size, activation='tanh', kernel_regularizer=regularizers.L2(0.001)),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.Dropout(0.3),
-        tf.keras.layers.Dense(hidden_size, activation='sigmoid', kernel_regularizer=regularizers.L2(0.001)),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.Dropout(0.3),
-        tf.keras.layers.Dense(output_size, activation='softmax')
-    ])
-    return model
-
 # Parametry sieci
 input_size = X.shape[1]
 num_epochs = 200
@@ -102,6 +81,8 @@ precisions = []
 recalls = []
 confusion_matrices = []
 
+# Wybieranie tylko kolumn kategorycznych
+categorical_features = data.select_dtypes(include=['category', 'object']).columns
 # Liczba cech kategorycznych
 num_categorical_features = len(categorical_features)
 
@@ -119,53 +100,33 @@ for train_index, test_index in skf.split(X, y):
     X_train = scaler.fit_transform(X_train)
     X_test = scaler.transform(X_test)
 
-    # Inicjalizacja modelu
-    model = create_model(input_size, hidden_size, output_size)
-    # model = create_model(input_size, hidden_size_1, hidden_size_2, output_size)
+    # Definicja modelu
+    input_categorical = Input(shape=(input_size,))
+    input_numerical = Input(shape=(input_size,))
 
-    # Kompilacja modelu
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
-                  loss='categorical_crossentropy' if output_size > 1 else 'binary_crossentropy',
-                  metrics=['accuracy'])
+    dense1_numerical = Dense(64, activation='relu')(input_numerical)
+    dense2_numerical = Dense(64, activation='relu')(dense1_numerical)
 
-    # Trenowanie modelu
-    history = model.fit(X_train, y_train, epochs=num_epochs, batch_size=batch_size, validation_data=(X_test, y_test), verbose=0, callbacks=[PrintProgress()])
+    concatenated_inputs = Concatenate()([input_categorical, input_numerical])
+
+    combined_output = Concatenate()([concatenated_inputs, dense2_numerical])
+    dense_combined = Dense(64, activation='relu')(combined_output)
+    output = Dense(output_size, activation='softmax')(dense_combined)
+
+    model = Model(inputs=[input_categorical, input_numerical], outputs=output)
+
+    model.compile(optimizer='adam',
+                         loss='categorical_crossentropy',
+                         metrics=['accuracy'])
+
+    history = model.fit([X_train, X_train], y_train, epochs=num_epochs, batch_size=batch_size,
+                               validation_split=0.1, verbose=0, callbacks=[PrintProgress()])
 
     # Testowanie modelu
-    y_pred = model.predict(X_test)
-    if output_size > 1:
-        y_pred_classes = np.argmax(y_pred, axis=1)
-        y_test_classes = np.argmax(y_test, axis=1)
-    else:
-        y_pred_classes = (y_pred > 0.5).astype(int).reshape(-1)
-        y_test_classes = y_test
+    y_pred = model.predict([X_test, X_test])
+    y_pred_classes = np.argmax(y_pred, axis=1)
+    y_test_classes = np.argmax(y_test, axis=1)
 
-    # # Definicja drugiego modelu bardziej złożonej sieci przyjmującej dane kategoryczne i numeryczne
-    # input_categorical = Input(shape=(input_size,))
-    # input_numerical = Input(shape=(input_size,))
-    #
-    # dense1_numerical = Dense(64, activation='relu')(input_numerical)
-    # dense2_numerical = Dense(64, activation='relu')(dense1_numerical)
-    #
-    # concatenated_inputs = Concatenate()([input_categorical, input_numerical])
-    #
-    # combined_output = Concatenate()([concatenated_inputs, dense2_numerical])
-    # dense_combined = Dense(64, activation='relu')(combined_output)
-    # output = Dense(output_size, activation='softmax')(dense_combined)
-    #
-    # model = Model(inputs=[input_categorical, input_numerical], outputs=output)
-    #
-    # model.compile(optimizer='adam',
-    #                      loss='categorical_crossentropy',
-    #                      metrics=['accuracy'])
-    #
-    # history = model.fit([X_train, X_train], y_train, epochs=num_epochs, batch_size=batch_size,
-    #                            validation_split=0.1, verbose=0, callbacks=[PrintProgress()])
-    #
-    # # Testowanie modelu
-    # y_pred = model.predict([X_test, X_test])
-    # y_pred_classes = np.argmax(y_pred, axis=1)
-    # y_test_classes = np.argmax(y_test, axis=1)
 
     validation_loss = history.history['val_loss']
     final_validation_loss = validation_loss[-1]
@@ -199,26 +160,13 @@ print(f'Średnia precyzja: {mean_precision:.4f} (± {std_precision:.4f})')
 print(f'Średnia czułość: {mean_recall:.4f} (± {std_recall:.4f})')
 
 # Wyświetlanie macierzy pomyłek dla każdej iteracji krosswalidacji
-for i, cm in enumerate(confusion_matrices):
-    plt.figure(figsize=(10, 7))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
-    plt.title(f'Macierz pomyłek dla fold {i + 1}')
-    plt.xlabel('Predykcja')
-    plt.ylabel('Rzeczywistość')
-    plt.show()
+# for i, cm in enumerate(confusion_matrices):
+#     plt.figure(figsize=(10, 7))
+#     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+#     plt.title(f'Macierz pomyłek dla fold {i + 1}')
+#     plt.xlabel('Predykcja')
+#     plt.ylabel('Rzeczywistość')
+#     plt.show()
 
 
-# Zapisywanie modelu i skalera
-import joblib
-
-# Zapisywanie skalera
-joblib.dump(scaler, 'scaler.joblib')
-
-# Zapisywanie encoderów
-joblib.dump(label_encoders, 'label_encoders.joblib')
-# joblib.dump(dc['NObeyesdad'].dtype, 'label_encoder_target.joblib')
-joblib.dump(order_of_classes, 'order_of_classes.joblib')
-
-# Zapisywanie modelu
-model.save('model.keras')
 

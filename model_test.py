@@ -10,9 +10,8 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Input
 from tensorflow.keras.optimizers import Adam
+import tensorflow as tf
 
 #Wczytywanie danych
 data = pd.read_csv('dane/ObesityDataSet_raw_and_data_sinthetic.csv')
@@ -120,24 +119,54 @@ models.append(model)
 accuracies.append(accuracy)
 
 # 7. Sieć neuronowa
+def create_model(input_size, hidden_size, output_size):
+    model = tf.keras.Sequential([
+        tf.keras.layers.Dense(hidden_size, input_shape=(input_size,), activation='relu'),
+        tf.keras.layers.Dense(hidden_size, activation='relu'),
+        tf.keras.layers.Dense(output_size, activation='softmax')
+    ])
+    return model
+
+# Parametry sieci
+input_size = X.shape[1]
+hidden_size = 64
+output_size = len(np.unique(y))  # Liczba klas
+num_epochs = 500
+batch_size = 32
+learning_rate = 0.001
+
 def evaluate_neural_network(X, y):
     fold_accuracies = []
     for train_index, val_index in skf.split(X, y):
         X_fold_train, X_fold_val = X[train_index], X[val_index]
         y_fold_train, y_fold_val = y[train_index], y[val_index]
 
-        model = Sequential()
+        # Konwersja etykiet do kategorii
+        if output_size > 1:
+            y_fold_train = tf.keras.utils.to_categorical(y_fold_train, output_size)
+            y_fold_val = tf.keras.utils.to_categorical(y_fold_val, output_size)
 
-        # Dodanie pierwszej warstwy Dense z określonym input_shape
-        model.add(Input(shape=(X_fold_train.shape[1],)))  # X_fold_train.shape[1] to liczba cech w danych X
+        # Inicjalizacja modelu
+        model = create_model(input_size, hidden_size, output_size)
 
-        model.add(Dense(64, activation='relu'))
-        model.add(Dense(32, activation='relu'))
-        model.add(Dense(1, activation='sigmoid'))
-        model.compile(optimizer=Adam(), loss='binary_crossentropy', metrics=['accuracy'])
+        # Kompilacja modelu
+        model.compile(optimizer=Adam(learning_rate=learning_rate),
+                      loss='categorical_crossentropy' if output_size > 1 else 'binary_crossentropy',
+                      metrics=['accuracy'])
 
-        model.fit(X_fold_train, y_fold_train, epochs=100, batch_size=10, verbose=0)
-        _, accuracy = model.evaluate(X_fold_val, y_fold_val, verbose=0)
+        # Trenowanie modelu
+        model.fit(X_fold_train, y_fold_train, epochs=num_epochs, batch_size=batch_size, verbose=0)
+
+        # Testowanie modelu
+        y_pred = model.predict(X_fold_val)
+        if output_size > 1:
+            y_pred_classes = np.argmax(y_pred, axis=1)
+            y_fold_val_classes = np.argmax(y_fold_val, axis=1)
+        else:
+            y_pred_classes = (y_pred > 0.5).astype(int).reshape(-1)
+            y_fold_val_classes = y_fold_val
+
+        accuracy_score(y_fold_val_classes, y_pred_classes)
         fold_accuracies.append(accuracy)
 
     return np.mean(fold_accuracies)

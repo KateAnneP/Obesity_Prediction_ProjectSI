@@ -19,8 +19,12 @@ from tensorflow.keras.models import load_model
 # Wczytanie modelu i skalera
 scaler = joblib.load('scaler.joblib')
 label_encoders = joblib.load('label_encoders.joblib')
-label_encoder_target = joblib.load('label_encoder_target.joblib')
+order_of_classes = joblib.load('order_of_classes.joblib')
 model = load_model('model.keras')
+
+# Funkcja odwrotnej transformacji
+def inverse_transform(encoded_labels, order_of_classes):
+    return [order_of_classes[label] for label in encoded_labels]
 
 # --- WCZYTYWANIE DANYCH I PREDYKCJA ---
 data = pd.read_csv('dane/ObesityDataSet_raw_and_data_sinthetic.csv')
@@ -141,7 +145,7 @@ user_prediction = model.predict(user_data_scaled)
 user_prediction_class = np.argmax(user_prediction, axis=1)
 
 # Konwersja predykcji do oryginalnych etykiet
-user_prediction_label = label_encoder_target.inverse_transform(user_prediction_class)
+user_prediction_label = inverse_transform(user_prediction_class, order_of_classes)
 
 # Wyświetlenie wyników
 print("\n\nPredykcja dla wprowadzonych danych:")
